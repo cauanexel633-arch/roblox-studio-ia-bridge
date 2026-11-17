@@ -37,7 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const [prefix, requestId, decision, expiresAt, signature] = callback.data.split("|");
   const validId = /^[0-9a-f]{24}$/i.test(requestId ?? "");
-  const validExpiry = /^\\d{10}$/.test(expiresAt ?? "") && Number(expiresAt) >= Math.floor(Date.now() / 1000);
+  const validExpiry = /^\d{10}$/.test(expiresAt ?? "") && Number(expiresAt) >= Math.floor(Date.now() / 1000);
   const validDecision = decision === "approved" || decision === "denied";
   if (prefix !== "rbx" || !validId || !validExpiry || !validDecision || !signature || !validSignature(requestId, decision, expiresAt, signature)) {
     return res.status(200).json({ ok: true });
