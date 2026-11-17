@@ -3,9 +3,8 @@ import { createHttpClient } from "@ably/pubsub-server";
 import { checkBearer } from "../lib/auth";
 
 /**
- * Emite um token Ably com permissão restrita para o servidor local:
- * só pode assinar o próprio canal de comandos e publicar respostas.
- * A chave principal do Ably nunca sai do Vercel.
+ * Token do agente local. O manager recebe health e publica health-res;
+ * o worker recebe cmd e publica res.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!checkBearer(req.headers, process.env.MACHINE_TOKEN)) {
@@ -22,9 +21,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     clientId: machineId,
     capability: JSON.stringify({
       [`cmd:${machineId}`]: ["subscribe"],
+      [`health:${machineId}`]: ["subscribe"],
       "res:*": ["publish"],
+      "health-res:*": ["publish"],
     }),
-    ttl: 60 * 60 * 1000, // 1 hora; o SDK renova sozinho
+    ttl: 60 * 60 * 1000,
   });
 
   return res.status(200).json(tokenRequest);

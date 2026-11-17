@@ -1,129 +1,63 @@
 # Roblox Studio ⇄ IA
 
-Permite que qualquer IA que aceite conector ou plugin MCP controle o Roblox Studio, pelo MCP oficial que já vem embutido no Studio.
+Permite que qualquer IA com suporte a MCP controle o Roblox Studio usando o servidor MCP oficial do Studio.
 
 ```
-IA de fora (conector/plugin MCP)
-        │  Streamable HTTP + OAuth  (/api/mcp)
-        ▼
-Vercel ──── publica comando ────▶ Ably ────▶ servidor local (Windows) ────▶ MCP do Studio (stdio)
-   ▲                                              │
-   └──────────── resposta ◀───── Ably ◀──────────┘
+IA (MCP) → Vercel → Ably → agente Windows → MCP oficial do Roblox Studio
 ```
 
-Todas as conexões partem do seu computador. O Vercel não guarda estado: ele só repassa os pedidos pelo Ably e devolve a resposta.
-
-O projeto não chama nenhum modelo de IA. Quem decide o que fazer é a IA que você conectar.
+O agente Windows fica ativo em segundo plano. Quando uma ferramenta é solicitada e o worker MCP está parado, o agente o inicia automaticamente, sem confirmação no Telegram ou no Windows.
 
 ## Estrutura
 
-| Caminho | Onde roda | Função |
-|---|---|---|
-| `api/mcp.ts` | Vercel | Servidor MCP remoto: lista e executa as ferramentas liberadas |
-| `api/tool.ts` | Vercel | Executa uma ferramenta direto, com `Authorization: Bearer` (útil para testes) |
-| `api/ably-token.ts` | Vercel | Emite token Ably restrito para o servidor local |
-| `lib/` | Vercel | Envio de comandos pelo Ably e autenticação |
-| `local-bridge/` | Seu PC | Conecta no MCP do Studio e responde aos comandos |
-
-## Segurança
-
-- **Allowlist:** só as ferramentas em `ALLOWED_TOOLS` aparecem para a IA e são aceitas pelo servidor local. Vazio significa nenhuma.
-- **Token restrito:** o servidor local recebe um token Ably que só permite assinar `cmd:<MACHINE_ID>` e publicar em `res:*`. A chave principal fica só no Vercel.
-- **Segredos separados:** `API_SECRET` (quem fala com o servidor) e `MACHINE_TOKEN` (quem é o seu PC) são independentes.
-- **Login com chave (OAuth 2.1 + PKCE):** a IA não guarda sua chave. Ao adicionar o conector, ela abre uma tela de login do seu servidor, você digita o `API_SECRET` uma vez, e a IA recebe um token de acesso válido por 30 dias.
-- **Tokens são assinados, não guardados:** não há banco de dados. Trocar o `API_SECRET` na Vercel invalida todos os tokens emitidos, o que serve como botão de "desconectar tudo".
-- **Studio executa Luau com acesso total ao projeto.** Não libere ferramentas de execução de código sem revisão.
+| Caminho | Função |
+|---|---|
+| `api/mcp.ts` | Servidor MCP remoto |
+| `api/ably-token.ts` | Token Ably restrito para os processos locais |
+| `lib/bridge.ts` | Verifica a prontidão e encaminha comandos |
+| `local-bridge/manager.ts` | Agente Windows: health check e inicialização automática |
+| `local-bridge/index.ts` | Worker MCP conectado ao Roblox Studio |
 
 ## Configuração
 
-### 1. Ably
-1. Crie uma conta em ably.com e um app.
-2. Copie a *API key* com permissões de publicar e assinar.
-3. Confira os limites do plano gratuito na página de preços antes de usar em produção.
+### 1. Variáveis da Vercel
 
-### 2. Vercel
-1. Importe este repositório no Vercel.
-2. Em *Settings → Environment Variables*, preencha as variáveis de `.env.example`: `ABLY_API_KEY`, `API_SECRET`, `MACHINE_TOKEN` e `MACHINE_ID`.
-3. Gere segredos longos e aleatórios para `API_SECRET` e `MACHINE_TOKEN`. Use valores diferentes.
+Mantenha as variáveis já existentes: `ABLY_API_KEY`, `API_SECRET`, `MACHINE_TOKEN` e `MACHINE_ID`.
 
-### 3. Conectar a IA
-A URL do servidor MCP é:
+As variáveis de Telegram não são mais necessárias para iniciar o servidor.
 
-```
-https://SEU-DOMINIO.vercel.app/api/mcp
-```
+### 2. Agente Windows
 
-Adicione como conector personalizado. Os nomes dos menus mudam com o tempo, então siga a documentação do cliente:
+Na pasta `local-bridge`, mantenha seu `.env` atual com `MACHINE_ID`, `TOKEN_URL` e `MACHINE_TOKEN`.
 
-- **Claude (claude.ai):** Settings → Connectors → *Add custom connector* → cole a URL.
-- **ChatGPT:** Settings → Connectors (modo desenvolvedor) → adicione um servidor MCP com a URL.
-- **Outros clientes MCP:** use a URL como endpoint do tipo *Streamable HTTP*.
-
-Ao adicionar, o cliente abre uma página **Conectar ao Roblox Studio**. Digite o `API_SECRET` e clique em **Autorizar**. Depois disso, a conexão fica ativa por 30 dias. Quando expirar, o cliente pede a chave de novo.
-
-Endpoints OAuth, para referência:
-
-| Endpoint | Função |
-|---|---|
-| `/.well-known/oauth-protected-resource` | Diz onde fica o servidor de login |
-| `/.well-known/oauth-authorization-server` | Metadados do servidor de login |
-| `/api/oauth/authorize` | Tela de login com a chave |
-| `/api/oauth/token` | Troca o código por token (PKCE) |
-| `/api/oauth/register` | Registro de cliente (público, sem segredo) |
-
-### 4. Studio
-1. Abra o place no Roblox Studio.
-2. Clique em **Assistant → ⋯ → Manage MCP Servers** e ligue **Enable Studio as MCP server**.
-3. Confirme que o MCP funciona pelo `mcp.bat` do Roblox, em `%LOCALAPPDATA%\Roblox`. O bridge usa essa mesma configuração, com `cmd.exe /c` e o `mcp.bat`.
-
-### 5. Servidor local (Windows)
-Use o `roblox-studio-local-bridge.zip` ou, a partir do repositório:
+Esta implementação está na branch `feature/telegram-start-approval`. Para atualizar e testar:
 
 ```powershell
+git pull origin feature/telegram-start-approval
 cd local-bridge
-copy .env.example .env
-# edite .env: MACHINE_ID, TOKEN_URL, MACHINE_TOKEN
 npm install
 npm start
 ```
 
-No primeiro start, o servidor lista as ferramentas do MCP com `[liberada]` ou `[bloqueada]`. Preencha `ALLOWED_TOOLS` com os nomes que quer liberar e reinicie.
+`npm start` mantém o agente Windows ativo. O worker MCP será iniciado automaticamente quando a primeira ferramenta for solicitada. Para iniciar o worker manualmente durante testes: `npm run worker`.
 
-## Testes
+Para iniciar o agente automaticamente ao entrar no Windows, crie uma tarefa no **Agendador de Tarefas**:
+- Disparador: **Ao fazer logon**.
+- Ação: `cmd.exe`.
+- Argumentos: `/c cd /d "CAMINHO_COMPLETO\local-bridge" && npm start`.
+- Marque **Executar somente quando o usuário estiver conectado**.
 
-Com o servidor local rodando e o Studio com o MCP ligado:
+### 3. Como funciona
 
-```bash
-# Chamada direta de uma ferramenta liberada
-curl -X POST https://SEU-DOMINIO.vercel.app/api/tool \
-  -H "Authorization: Bearer $API_SECRET" -H "Content-Type: application/json" \
-  -d '{"tool":"NOME_DA_FERRAMENTA","args":{}}'
+1. O GPT solicita uma ferramenta.
+2. A Vercel envia um health ping ao agente Windows.
+3. Se o worker MCP estiver parado, o agente inicia o processo automaticamente.
+4. A Vercel aguarda a confirmação de prontidão do worker e só então envia o comando solicitado.
+5. Se o agente Windows não responder ou o worker não ficar pronto em 30 segundos, o GPT recebe um erro explicativo.
 
-# Lista de ferramentas via MCP (mesmo que a IA veria), com o segredo no cabeçalho
-curl -X POST "https://SEU-DOMINIO.vercel.app/api/mcp" \
-  -H "Authorization: Bearer $API_SECRET" \
-  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
-```
+## Segurança e limitações
 
-Comece sempre com uma ferramenta de **leitura**. Só depois libere escrita.
-
-## Limitações conhecidas
-
-- Se o servidor local estiver desligado, a chamada retorna erro de timeout após 25 segundos.
-- Mensagens publicadas enquanto o servidor local está offline são perdidas. Não há fila persistente.
-- O MCP do Studio atende uma chamada por vez; o servidor local enfileira as chamadas.
-- A lista de ferramentas é pedida ao PC a cada `tools/list`, então o PC precisa estar ligado para a IA ver qualquer ferramenta.
-- O servidor local não reconecta sozinho se o processo do MCP cair. Reinicie o `npm start`.
-- Ainda não testado com um cliente real de IA. O fluxo OAuth foi testado localmente, cenário a cenário (chave errada, PKCE errado, token forjado, redirect diferente).
-- Códigos de autorização valem 5 minutos. Como não há banco, um código ainda dentro desse prazo pode ser reutilizado. O PKCE limita o estrago, mas não elimina isso.
-- Não há refresh token: quando o token de 30 dias expira, o cliente pede a chave de novo.
-- Se o Vercel mudar de domínio, configure `PUBLIC_URL` com a URL pública, para os metadados OAuth ficarem corretos.
-
-## Desenvolvimento
-
-```bash
-npm install
-npm run typecheck          # na raiz (Vercel)
-cd local-bridge && npm run typecheck
-```
+- O token Ably local é limitado aos canais de comando, health e resposta.
+- O PC precisa estar ligado e o agente Windows ativo. O fluxo não liga fisicamente um PC desligado.
+- O endpoint MCP foi configurado para até 60 segundos; o cliente MCP também pode impor seu próprio limite.
+- O Studio executa código Luau com acesso ao projeto. Libere apenas ferramentas revisadas em `ALLOWED_TOOLS`.

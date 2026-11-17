@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Servidor local: ponte entre o Ably e o MCP oficial do Roblox Studio (Windows)",
+  "description": "Agente de aprovação e ponte entre Ably e o MCP oficial do Roblox Studio",
   "scripts": {
-    "start": "node --env-file=.env --import tsx index.ts",
+    "start": "node --env-file=.env --import tsx manager.ts",
+    "worker": "node --env-file=.env --import tsx index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
