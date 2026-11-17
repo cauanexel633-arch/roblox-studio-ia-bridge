@@ -1,5 +1,5 @@
 import { createHttpClient, createRealtimeClient } from "@ably/pubsub-server";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 
 export type BridgeReply =
@@ -8,7 +8,7 @@ export type BridgeReply =
 
 const REPLY_TIMEOUT_MS = 25_000;
 const MANAGER_PING_TIMEOUT_MS = 1_500;
-const APPROVAL_TIMEOUT_MS = 22_000;
+const APPROVAL_TIMEOUT_MS = 15_000;
 const STARTUP_TIMEOUT_MS = 12_000;
 const MAX_DECOMPRESSED_REPLY_BYTES = 10 * 1024 * 1024;
 
@@ -67,14 +67,19 @@ function approvalSignature(requestId: string, decision: string): string {
     .slice(0, 16);
 }
 
-async function sendTelegramApproval(requestId: string): Promise<void> {
+async function sendTelegramApproval(requestId: string, expiresAt: number): Promise<void> {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!botToken || !chatId) {
     throw new Error("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID na Vercel para habilitar a aprovação pelo iPhone.");
   }
-  const callback = (decision: "approved" | "denied") =>
-    `rbx|${requestId}|${decision}|${approvalSignature(requestId, decision)}`;
+  const callback = (decision: "approved" | "denied") => {
+    const signature = createHmac("sha256", process.env.API_SECRET ?? "")
+      .update(`telegram-approval:v1:${requestId}:${decision}:${expiresAt}`)
+      .digest("hex")
+      .slice(0, 12);
+    return `rbx|${requestId}|${decision}|${expiresAt}|${signature}`;
+  };
 
   const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: "POST",
@@ -96,7 +101,8 @@ async function sendTelegramApproval(requestId: string): Promise<void> {
 }
 
 async function waitForApproval(machineId: string, key: string): Promise<"approved" | "denied" | "expired"> {
-  const requestId = randomUUID();
+  const requestId = randomBytes(12).toString("hex");
+  const expiresAt = Math.floor(Date.now() / 1000) + Math.ceil(APPROVAL_TIMEOUT_MS / 1000);
   const realtime = createRealtimeClient({ key });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -111,9 +117,10 @@ async function waitForApproval(machineId: string, key: string): Promise<"approve
     await responseChannel.attach();
 
     // Envia ao iPhone e, se o agente estiver online, também ao Windows.
-    await sendTelegramApproval(requestId);
+    await sendTelegramApproval(requestId, expiresAt);
     await createHttpClient({ key }).channels.get(`control:${machineId}`).publish("approval_request", {
       requestId,
+      expiresAt,
       message: "O ChatGPT solicitou iniciar o servidor local do Roblox Studio.",
     });
 
