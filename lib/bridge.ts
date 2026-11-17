@@ -9,7 +9,7 @@ export type BridgeReply =
 const REPLY_TIMEOUT_MS = 25_000;
 const MANAGER_PING_TIMEOUT_MS = 1_500;
 const APPROVAL_TIMEOUT_MS = 22_000;
-const STARTUP_TIMEOUT_MS = 6_000;
+const STARTUP_TIMEOUT_MS = 12_000;
 const MAX_DECOMPRESSED_REPLY_BYTES = 10 * 1024 * 1024;
 
 type EncodedBridgeReply = { __bridgeEncoding: "gzip+base64"; payload: string };
@@ -35,7 +35,7 @@ function decodeBridgeReply(data: unknown): BridgeReply {
   return data as BridgeReply;
 }
 
-type ManagerStatus = { managerOnline: boolean; workerRunning: boolean };
+type ManagerStatus = { managerOnline: boolean; workerRunning: boolean; workerStarting?: boolean };
 
 async function pingManager(machineId: string, key: string): Promise<ManagerStatus | null> {
   const requestId = randomUUID();
@@ -127,6 +127,16 @@ async function waitForApproval(machineId: string, key: string): Promise<"approve
 async function ensureWorker(machineId: string, key: string): Promise<BridgeReply | null> {
   const status = await pingManager(machineId, key);
   if (status?.workerRunning) return null;
+  if (status?.workerStarting) {
+    const startupDeadline = Date.now() + 12_000;
+    while (Date.now() < startupDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const current = await pingManager(machineId, key);
+      if (current?.workerRunning) return null;
+      if (!current?.workerStarting) break;
+    }
+    return { ok: false, error: "O servidor MCP está iniciando, mas não ficou pronto dentro do prazo. Verifique os logs do agente Windows." };
+  }
 
   let decision: "approved" | "denied" | "expired";
   try {
