@@ -20,6 +20,7 @@ const ably = createClient({
 const control = ably.channels.get(`control:${MACHINE_ID}`);
 const health = ably.channels.get(`health:${MACHINE_ID}`);
 let worker: ReturnType<typeof spawn> | null = null;
+let workerReady = false;
 const prompts = new Set<string>();
 
 function startWorker() {
@@ -28,21 +29,33 @@ function startWorker() {
     return;
   }
   console.log("[MANAGER] Iniciando o servidor MCP do Roblox Studio...");
+  workerReady = false;
   worker = spawn(process.execPath, ["--import", "tsx", "index.ts"], {
     cwd: process.cwd(),
     env: process.env,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  worker.stdout?.on("data", (chunk: Buffer) => process.stdout.write(`[WORKER] ${chunk}`));
+  let workerOutput = "";
+  worker.stdout?.on("data", (chunk: Buffer) => {
+    const output = chunk.toString();
+    workerOutput = (workerOutput + output).slice(-4000);
+    if (workerOutput.includes("Bridge ativo para")) {
+      workerReady = true;
+      console.log("[MANAGER] Worker MCP pronto para receber comandos.");
+    }
+    process.stdout.write(`[WORKER] ${output}`);
+  });
   worker.stderr?.on("data", (chunk: Buffer) => process.stderr.write(`[WORKER] ${chunk}`));
   worker.on("exit", (code, signal) => {
     console.log(`[MANAGER] Worker encerrou (code=${code}, signal=${signal}).`);
     worker = null;
+    workerReady = false;
   });
   worker.on("error", (error) => {
     console.error("[MANAGER] Não foi possível iniciar o worker:", error);
     worker = null;
+    workerReady = false;
   });
 }
 
@@ -95,7 +108,8 @@ health.subscribe(async (message) => {
   try {
     await ably.channels.get(`health-res:${data.requestId}`).publish("pong", {
       managerOnline: true,
-      workerRunning: Boolean(worker && worker.exitCode === null && !worker.killed),
+      workerRunning: Boolean(workerReady && worker && worker.exitCode === null && !worker.killed),
+      workerStarting: Boolean(!workerReady && worker && worker.exitCode === null && !worker.killed),
     });
   } catch (error) {
     console.error("[MANAGER] Falha ao responder health check:", error);
