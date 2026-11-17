@@ -58,13 +58,13 @@ async function pingManager(machineId: string, key: string): Promise<ManagerStatu
   }
 }
 
-function approvalSignature(requestId: string, decision: string): string {
+function approvalSignature(requestId: string, decision: string, expiresAt: number): string {
   const secret = process.env.API_SECRET;
   if (!secret) throw new Error("API_SECRET não configurado");
   return createHmac("sha256", secret)
-    .update(`telegram-approval:v1:${requestId}:${decision}`)
+    .update(`telegram-approval:v1:${requestId}:${decision}:${expiresAt}`)
     .digest("hex")
-    .slice(0, 16);
+    .slice(0, 12);
 }
 
 async function sendTelegramApproval(requestId: string, expiresAt: number): Promise<void> {
@@ -74,10 +74,7 @@ async function sendTelegramApproval(requestId: string, expiresAt: number): Promi
     throw new Error("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID na Vercel para habilitar a aprovação pelo iPhone.");
   }
   const callback = (decision: "approved" | "denied") => {
-    const signature = createHmac("sha256", process.env.API_SECRET ?? "")
-      .update(`telegram-approval:v1:${requestId}:${decision}:${expiresAt}`)
-      .digest("hex")
-      .slice(0, 12);
+    const signature = approvalSignature(requestId, decision, expiresAt);
     return `rbx|${requestId}|${decision}|${expiresAt}|${signature}`;
   };
 
