@@ -43,6 +43,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const configuredChatId = process.env.TELEGRAM_CHAT_ID;
+  if (!callback.message || !configuredChatId || String(callback.message.chat.id) !== configuredChatId) {
+    return res.status(200).json({ ok: true });
+  }
   const machineId = process.env.MACHINE_ID;
   const ablyKey = process.env.ABLY_API_KEY;
   if (!botToken || !machineId || !ablyKey) return res.status(500).json({ error: "Telegram/Ably não configurado" });
@@ -68,6 +72,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body: JSON.stringify({
         chat_id: callback.message.chat.id,
         message_id: callback.message.message_id,
+        reply_markup: { inline_keyboard: [] },
         text: decision === "approved"
           ? "✅ Solicitação aceita. O agente do Windows iniciará o servidor local."
           : "⛔ Solicitação negada. O servidor local não será iniciado.",
