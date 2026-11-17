@@ -1,5 +1,5 @@
 import { createHttpClient, createRealtimeClient } from "@ably/pubsub-server";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 
 export type BridgeReply =
@@ -14,11 +14,6 @@ const MAX_DECOMPRESSED_REPLY_BYTES = 10 * 1024 * 1024;
 
 type EncodedBridgeReply = { __bridgeEncoding: "gzip+base64"; payload: string };
 
-function safeEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
 
 function decodeBridgeReply(data: unknown): BridgeReply {
   if (
@@ -113,13 +108,18 @@ async function waitForApproval(machineId: string, key: string): Promise<"approve
     });
     await responseChannel.attach();
 
-    // Envia ao iPhone e, se o agente estiver online, também ao Windows.
-    await sendTelegramApproval(requestId, expiresAt);
-    await createHttpClient({ key }).channels.get(`control:${machineId}`).publish("approval_request", {
-      requestId,
-      expiresAt,
-      message: "O ChatGPT solicitou iniciar o servidor local do Roblox Studio.",
-    });
+    // Dispara as duas notificações. Uma falha não impede a outra de funcionar.
+    const [telegramResult, windowsResult] = await Promise.allSettled([
+      sendTelegramApproval(requestId, expiresAt),
+      createHttpClient({ key }).channels.get(`control:${machineId}`).publish("approval_request", {
+        requestId,
+        expiresAt,
+        message: "O ChatGPT solicitou iniciar o servidor local do Roblox Studio.",
+      }),
+    ]);
+    if (telegramResult.status === "rejected" && windowsResult.status === "rejected") {
+      throw new Error("Não foi possível enviar a solicitação ao Telegram nem ao agente Windows.");
+    }
 
     return await decisionPromise;
   } finally {
