@@ -78,7 +78,7 @@ async function askOnWindows(requestId: string) {
     ].join("; ");
     const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-Command", script], {
       windowsHide: false,
-      timeout: 120000,
+      timeout: 12000,
     });
     const decision = stdout.trim().toLowerCase().includes("approved") ? "approved" : "denied";
     await publishDecision(requestId, decision);
