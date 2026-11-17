@@ -22,6 +22,13 @@ const health = ably.channels.get(`health:${MACHINE_ID}`);
 let worker: ReturnType<typeof spawn> | null = null;
 let workerReady = false;
 const prompts = new Set<string>();
+const decisions = new Map<string, "approved" | "denied">();
+
+function rememberDecision(requestId: string, decision: "approved" | "denied") {
+  decisions.set(requestId, decision);
+  const cleanup = setTimeout(() => decisions.delete(requestId), 60_000);
+  cleanup.unref();
+}
 
 function startWorker() {
   if (worker && worker.exitCode === null && !worker.killed) {
@@ -60,15 +67,14 @@ function startWorker() {
 }
 
 async function publishDecision(requestId: string, decision: "approved" | "denied") {
+  if (decisions.has(requestId)) return;
+  rememberDecision(requestId, decision);
   await ably.channels.get(`approval-res:${requestId}`).publish("decision", { decision });
-  if (decision === "approved") {
-    await control.publish("start", { requestId, source: "windows" });
-    startWorker();
-  }
+  if (decision === "approved") startWorker();
 }
 
 async function askOnWindows(requestId: string) {
-  if (prompts.has(requestId)) return;
+  if (prompts.has(requestId) || decisions.has(requestId)) return;
   prompts.add(requestId);
   try {
     const script = [
@@ -93,9 +99,12 @@ async function askOnWindows(requestId: string) {
 }
 
 control.subscribe(async (message) => {
-  const data = (message.data ?? {}) as { requestId?: string };
-  if (message.name === "start") {
-    startWorker();
+  const data = (message.data ?? {}) as { requestId?: string; decision?: "approved" | "denied" };
+  if (message.name === "decision" && data.requestId && (data.decision === "approved" || data.decision === "denied")) {
+    if (!decisions.has(data.requestId)) {
+      rememberDecision(data.requestId, data.decision);
+      if (data.decision === "approved") startWorker();
+    }
   } else if (message.name === "approval_request" && data.requestId) {
     void askOnWindows(data.requestId);
   }
