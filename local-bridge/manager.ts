@@ -1,8 +1,6 @@
 import { createClient } from "@ably/pubsub-device";
-import { spawn, execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 
-const execFileAsync = promisify(execFile);
 function env(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`Variável ${name} não definida no .env`);
@@ -17,25 +15,14 @@ const ably = createClient({
   authHeaders: { Authorization: `Bearer ${MACHINE_TOKEN}` },
   clientId: MACHINE_ID,
 });
-const control = ably.channels.get(`control:${MACHINE_ID}`);
 const health = ably.channels.get(`health:${MACHINE_ID}`);
 let worker: ReturnType<typeof spawn> | null = null;
 let workerReady = false;
-const prompts = new Set<string>();
-const decisions = new Map<string, "approved" | "denied">();
-
-function rememberDecision(requestId: string, decision: "approved" | "denied") {
-  decisions.set(requestId, decision);
-  const cleanup = setTimeout(() => decisions.delete(requestId), 60_000);
-  cleanup.unref();
-}
 
 function startWorker() {
-  if (worker && worker.exitCode === null && !worker.killed) {
-    console.log("[MANAGER] Worker já está em execução.");
-    return;
-  }
-  console.log("[MANAGER] Iniciando o servidor MCP do Roblox Studio...");
+  if (worker && worker.exitCode === null && !worker.killed) return;
+
+  console.log("[MANAGER] Iniciando automaticamente o servidor MCP do Roblox Studio...");
   workerReady = false;
   worker = spawn(process.execPath, ["--import", "tsx", "index.ts"], {
     cwd: process.cwd(),
@@ -43,6 +30,7 @@ function startWorker() {
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
+
   let workerOutput = "";
   worker.stdout?.on("data", (chunk: Buffer) => {
     const output = chunk.toString();
@@ -66,54 +54,14 @@ function startWorker() {
   });
 }
 
-async function publishDecision(requestId: string, decision: "approved" | "denied") {
-  if (decisions.has(requestId)) return;
-  rememberDecision(requestId, decision);
-  await ably.channels.get(`approval-res:${requestId}`).publish("decision", { decision });
-  if (decision === "approved") startWorker();
-}
-
-async function askOnWindows(requestId: string) {
-  if (prompts.has(requestId) || decisions.has(requestId)) return;
-  prompts.add(requestId);
-  try {
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$answer = [System.Windows.Forms.MessageBox]::Show('O ChatGPT solicitou iniciar o servidor local do Roblox Studio. Deseja iniciar agora?','Roblox Studio - Solicitação de inicialização',[System.Windows.Forms.MessageBoxButtons]::YesNo,[System.Windows.Forms.MessageBoxIcon]::Question)",
-      "if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) { 'approved' } else { 'denied' }",
-    ].join("; ");
-    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-Command", script], {
-      windowsHide: false,
-      timeout: 60000,
-    });
-    const decision = stdout.trim().toLowerCase().includes("approved") ? "approved" : "denied";
-    await publishDecision(requestId, decision);
-  } catch (error) {
-    console.error("[MANAGER] Falha na janela de aprovação:", error);
-    try { await publishDecision(requestId, "denied"); } catch (publishError) {
-      console.error("[MANAGER] Falha ao enviar decisão:", publishError);
-    }
-  } finally {
-    prompts.delete(requestId);
-  }
-}
-
-control.subscribe(async (message) => {
-  const data = (message.data ?? {}) as { requestId?: string; decision?: "approved" | "denied" };
-  if (message.name === "decision" && data.requestId && (data.decision === "approved" || data.decision === "denied")) {
-    if (!decisions.has(data.requestId)) {
-      rememberDecision(data.requestId, data.decision);
-      if (data.decision === "approved") startWorker();
-    }
-  } else if (message.name === "approval_request" && data.requestId) {
-    void askOnWindows(data.requestId);
-  }
-});
-
 health.subscribe(async (message) => {
   if (message.name !== "ping") return;
   const data = (message.data ?? {}) as { requestId?: string };
   if (!data.requestId) return;
+
+  // O primeiro ping dispara a inicialização; pings seguintes acompanham a prontidão.
+  if (!worker || worker.exitCode !== null || worker.killed) startWorker();
+
   try {
     await ably.channels.get(`health-res:${data.requestId}`).publish("pong", {
       managerOnline: true,
@@ -133,5 +81,5 @@ const shutdown = async () => {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-console.log(`[MANAGER] Agente de inicialização ativo para ${MACHINE_ID}.`);
-console.log("[MANAGER] Aguardando solicitações. O MCP só será iniciado após aprovação.");
+console.log(`[MANAGER] Agente automático ativo para ${MACHINE_ID}.`);
+console.log("[MANAGER] O worker MCP será iniciado automaticamente quando uma ferramenta for solicitada.");
