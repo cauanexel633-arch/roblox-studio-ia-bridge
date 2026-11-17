@@ -47,7 +47,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const list = await sendToBridge("list");
-    if (!list.ok) throw new Error(list.error);
+    // Se o PC estiver offline, a descoberta ainda responde (sem ferramentas)
+    // em vez de falhar. Quando o PC voltar, a lista aparece.
+    if (!list.ok) {
+      console.warn("tools/list sem ferramentas:", list.error);
+      return { tools: [] };
+    }
     const tools = (list.tools ?? []) as McpTool[];
     return {
       tools: tools.map((t) => ({

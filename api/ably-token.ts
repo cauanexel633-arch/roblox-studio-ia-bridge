@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import Ably from "ably";
+import { createHttpClient } from "@ably/pubsub-server";
 import { checkBearer } from "../lib/auth";
 
 /**
@@ -13,10 +13,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const machineId = process.env.MACHINE_ID;
-  if (!machineId) return res.status(500).json({ error: "MACHINE_ID não configurado" });
+  const key = process.env.ABLY_API_KEY;
+  if (!machineId || !key) {
+    return res.status(500).json({ error: "MACHINE_ID ou ABLY_API_KEY não configurado" });
+  }
 
-  const rest = new Ably.Rest({ key: process.env.ABLY_API_KEY! });
-  const tokenRequest = await rest.auth.createTokenRequest({
+  const tokenRequest = await createHttpClient({ key }).auth.createTokenRequest({
     clientId: machineId,
     capability: JSON.stringify({
       [`cmd:${machineId}`]: ["subscribe"],

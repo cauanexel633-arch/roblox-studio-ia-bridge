@@ -1,4 +1,4 @@
-import Ably from "ably";
+import { createClient } from "@ably/pubsub-device";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -44,7 +44,7 @@ function enqueue(job: () => Promise<void>): Promise<void> {
 }
 
 // 3. Ably com token restrito emitido pelo Vercel
-const ably = new Ably.Realtime({
+const ably = createClient({
   authUrl: TOKEN_URL,
   authHeaders: { Authorization: `Bearer ${MACHINE_TOKEN}` },
   clientId: MACHINE_ID,

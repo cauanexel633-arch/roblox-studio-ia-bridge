@@ -1,4 +1,4 @@
-import Ably from "ably";
+import { createHttpClient, createRealtimeClient } from "@ably/pubsub-server";
 import { randomUUID } from "crypto";
 
 export type BridgeReply =
@@ -13,18 +13,20 @@ const REPLY_TIMEOUT_MS = 25_000;
  * - "list": pede ao servidor local as ferramentas liberadas (allowlist).
  * - "call": pede a execução de uma ferramenta.
  *
- * O canal de resposta é assinado ANTES de o comando ser publicado,
- * para que a resposta nunca chegue antes da assinatura.
+ * Usa o SDK de servidor (@ably/pubsub-server), exigido pelo preço por MAU.
+ * O canal de resposta é assinado ANTES de o comando ser publicado.
  */
 export async function sendToBridge(
   name: "list" | "call",
   data: Record<string, unknown> = {}
 ): Promise<BridgeReply> {
   const machineId = process.env.MACHINE_ID;
+  const key = process.env.ABLY_API_KEY;
   if (!machineId) return { ok: false, error: "MACHINE_ID não configurado" };
+  if (!key) return { ok: false, error: "ABLY_API_KEY não configurada" };
 
   const requestId = randomUUID();
-  const realtime = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
+  const realtime = createRealtimeClient({ key });
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
@@ -35,12 +37,16 @@ export async function sendToBridge(
         () => reject(new Error("timeout: o servidor local não respondeu (está ligado e conectado?)")),
         REPLY_TIMEOUT_MS
       );
+      // Falha de conexão com o Ably deve virar erro imediato, não esperar o timeout
+      realtime.connection.on("failed", (change) => {
+        reject(new Error(`Ably: conexão falhou (${change.reason?.message ?? "motivo desconhecido"})`));
+      });
       resChannel.subscribe("result", (msg) => resolve(msg.data as BridgeReply));
     });
 
     await resChannel.attach();
 
-    await new Ably.Rest({ key: process.env.ABLY_API_KEY! })
+    await createHttpClient({ key })
       .channels.get(`cmd:${machineId}`)
       .publish(name, { requestId, ...data });
 
@@ -49,6 +55,10 @@ export async function sendToBridge(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
-    realtime.close();
+    try {
+      realtime.close();
+    } catch {
+      // conexão já encerrada
+    }
   }
 }
