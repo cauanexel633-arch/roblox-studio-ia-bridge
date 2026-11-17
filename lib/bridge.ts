@@ -1,5 +1,5 @@
 import { createHttpClient, createRealtimeClient } from "@ably/pubsub-server";
-import { randomUUID } from "crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 
 export type BridgeReply =
@@ -7,22 +7,26 @@ export type BridgeReply =
   | { ok: false; error: string };
 
 const REPLY_TIMEOUT_MS = 25_000;
+const MANAGER_PING_TIMEOUT_MS = 1_500;
+const APPROVAL_TIMEOUT_MS = 22_000;
+const STARTUP_TIMEOUT_MS = 6_000;
 const MAX_DECOMPRESSED_REPLY_BYTES = 10 * 1024 * 1024;
 
 type EncodedBridgeReply = { __bridgeEncoding: "gzip+base64"; payload: string };
 
-/** Aceita respostas antigas sem compressão e envelopes Gzip do bridge atualizado. */
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
 function decodeBridgeReply(data: unknown): BridgeReply {
   if (
-    data &&
-    typeof data === "object" &&
-    "__bridgeEncoding" in data &&
+    data && typeof data === "object" && "__bridgeEncoding" in data &&
     (data as EncodedBridgeReply).__bridgeEncoding === "gzip+base64"
   ) {
     const encoded = data as EncodedBridgeReply;
-    if (typeof encoded.payload !== "string") {
-      throw new Error("Resposta comprimida inválida: payload ausente");
-    }
+    if (typeof encoded.payload !== "string") throw new Error("Resposta comprimida inválida");
     const json = gunzipSync(Buffer.from(encoded.payload, "base64"), {
       maxOutputLength: MAX_DECOMPRESSED_REPLY_BYTES,
     }).toString("utf8");
@@ -31,14 +35,128 @@ function decodeBridgeReply(data: unknown): BridgeReply {
   return data as BridgeReply;
 }
 
+type ManagerStatus = { managerOnline: boolean; workerRunning: boolean };
+
+async function pingManager(machineId: string, key: string): Promise<ManagerStatus | null> {
+  const requestId = randomUUID();
+  const realtime = createRealtimeClient({ key });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const channel = realtime.channels.get(`health-res:${requestId}`);
+    const response = new Promise<ManagerStatus | null>((resolve) => {
+      timer = setTimeout(() => resolve(null), MANAGER_PING_TIMEOUT_MS);
+      channel.subscribe("pong", (message) => resolve(message.data as ManagerStatus));
+    });
+    await channel.attach();
+    await createHttpClient({ key }).channels.get(`health:${machineId}`).publish("ping", { requestId });
+    return await response;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    realtime.close();
+  }
+}
+
+function approvalSignature(requestId: string, decision: string): string {
+  const secret = process.env.API_SECRET;
+  if (!secret) throw new Error("API_SECRET não configurado");
+  return createHmac("sha256", secret)
+    .update(`telegram-approval:v1:${requestId}:${decision}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+async function sendTelegramApproval(requestId: string): Promise<void> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!botToken || !chatId) {
+    throw new Error("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID na Vercel para habilitar a aprovação pelo iPhone.");
+  }
+  const callback = (decision: "approved" | "denied") =>
+    `rbx|${requestId}|${decision}|${approvalSignature(requestId, decision)}`;
+
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: "O ChatGPT solicitou iniciar o servidor local do Roblox Studio. Deseja iniciar agora?",
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "▶ Iniciar", callback_data: callback("approved") },
+          { text: "✖ Negar", callback_data: callback("denied") },
+        ]],
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`Telegram não enviou a notificação (HTTP ${response.status})`);
+  const result = await response.json() as { ok?: boolean; description?: string };
+  if (!result.ok) throw new Error(result.description ?? "Falha ao enviar notificação do Telegram");
+}
+
+async function waitForApproval(machineId: string, key: string): Promise<"approved" | "denied" | "expired"> {
+  const requestId = randomUUID();
+  const realtime = createRealtimeClient({ key });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const responseChannel = realtime.channels.get(`approval-res:${requestId}`);
+    const decisionPromise = new Promise<"approved" | "denied" | "expired">((resolve) => {
+      timer = setTimeout(() => resolve("expired"), APPROVAL_TIMEOUT_MS);
+      responseChannel.subscribe("decision", (message) => {
+        const decision = (message.data as { decision?: string })?.decision;
+        if (decision === "approved" || decision === "denied") resolve(decision);
+      });
+    });
+    await responseChannel.attach();
+
+    // Envia ao iPhone e, se o agente estiver online, também ao Windows.
+    await sendTelegramApproval(requestId);
+    await createHttpClient({ key }).channels.get(`control:${machineId}`).publish("approval_request", {
+      requestId,
+      message: "O ChatGPT solicitou iniciar o servidor local do Roblox Studio.",
+    });
+
+    return await decisionPromise;
+  } finally {
+    clearTimeout(timer);
+    realtime.close();
+  }
+}
+
+async function ensureWorker(machineId: string, key: string): Promise<BridgeReply | null> {
+  const status = await pingManager(machineId, key);
+  if (status?.workerRunning) return null;
+
+  let decision: "approved" | "denied" | "expired";
+  try {
+    decision = await waitForApproval(machineId, key);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
+  if (decision === "denied") {
+    return { ok: false, error: "Solicitação de inicialização negada. O servidor local não foi iniciado." };
+  }
+  if (decision === "expired") {
+    return { ok: false, error: "A solicitação de inicialização expirou sem uma resposta. O servidor local continua desligado." };
+  }
+
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const current = await pingManager(machineId, key);
+    if (current?.workerRunning) return null;
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  return {
+    ok: false,
+    error: "A solicitação foi aceita, mas o agente do Windows não iniciou o servidor. Verifique se o agente de inicialização está aberto no PC.",
+  };
+}
+
 /**
- * Envia um comando ao servidor local pelo Ably e aguarda a resposta.
- *
- * - "list": pede ao servidor local as ferramentas liberadas (allowlist).
- * - "call": pede a execução de uma ferramenta.
- *
- * Usa o SDK de servidor (@ably/pubsub-server), exigido pelo preço por MAU.
- * O canal de resposta é assinado ANTES de o comando ser publicado.
+ * Garante que o worker MCP esteja ativo antes de listar ferramentas ou executar
+ * uma chamada. Se estiver parado, solicita aprovação por Telegram/Windows.
  */
 export async function sendToBridge(
   name: "list" | "call",
@@ -49,46 +167,40 @@ export async function sendToBridge(
   if (!machineId) return { ok: false, error: "MACHINE_ID não configurado" };
   if (!key) return { ok: false, error: "ABLY_API_KEY não configurada" };
 
+  const readinessError = await ensureWorker(machineId, key);
+  if (readinessError) return readinessError;
+
   const requestId = randomUUID();
   const realtime = createRealtimeClient({ key });
   let timer: ReturnType<typeof setTimeout> | undefined;
-
   try {
     const resChannel = realtime.channels.get(`res:${requestId}`);
-
     const reply = new Promise<BridgeReply>((resolve, reject) => {
       timer = setTimeout(
-        () => reject(new Error("timeout: o servidor local não respondeu (está ligado e conectado?)")),
+        () => reject(new Error("timeout: o servidor local não respondeu dentro do prazo")),
         REPLY_TIMEOUT_MS
       );
-      // Falha de conexão com o Ably deve virar erro imediato, não esperar o timeout
       realtime.connection.on("failed", (change) => {
         reject(new Error(`Ably: conexão falhou (${change.reason?.message ?? "motivo desconhecido"})`));
       });
-      resChannel.subscribe("result", (msg) => {
-        try {
-          resolve(decodeBridgeReply(msg.data));
-        } catch (err) {
-          reject(new Error(`Falha ao decodificar resposta do bridge: ${err instanceof Error ? err.message : String(err)}`));
+      resChannel.subscribe("result", (message) => {
+        try { resolve(decodeBridgeReply(message.data)); }
+        catch (error) {
+          reject(new Error(`Falha ao decodificar resposta do bridge: ${error instanceof Error ? error.message : String(error)}`));
         }
       });
     });
 
     await resChannel.attach();
-
-    await createHttpClient({ key })
-      .channels.get(`cmd:${machineId}`)
-      .publish(name, { requestId, ...data });
-
+    await createHttpClient({ key }).channels.get(`cmd:${machineId}`).publish(name, {
+      requestId,
+      ...data,
+    });
     return await reply;
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
     clearTimeout(timer);
-    try {
-      realtime.close();
-    } catch {
-      // conexão já encerrada
-    }
+    try { realtime.close(); } catch { /* conexão já encerrada */ }
   }
 }
