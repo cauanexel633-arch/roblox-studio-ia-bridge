@@ -5,7 +5,7 @@ import { sendToBridge } from "../lib/bridge";
 export const config = { maxDuration: 60 };
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-5";
+const MODEL = process.env.OPENROUTER_MODEL ?? "openai/gpt-oss-120b:free";
 const MAX_STEPS = 8;
 
 const SYSTEM = `Você controla o Roblox Studio do usuário através de ferramentas.
