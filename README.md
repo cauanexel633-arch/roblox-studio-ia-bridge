@@ -79,7 +79,7 @@ Para iniciar o agente automaticamente ao entrar no Windows, crie uma tarefa no *
 2. Se o worker MCP estiver parado, a Vercel envia uma solicitação ao Telegram e ao agente Windows.
 3. No Windows aparece uma janela com **Sim/Não**; no iPhone, o Telegram apresenta **Iniciar/Negar**.
 4. Se aprovado, o agente inicia o worker MCP e a chamada tenta continuar.
-5. Se negado, o GPT recebe uma resposta informando que a solicitação foi negada. Sem resposta em 22 segundos, a solicitação expira.
+5. Se negado, o GPT recebe uma resposta informando que a solicitação foi negada. Sem resposta em 15 segundos, a solicitação expira.
 
 ## Segurança e limitações
 
