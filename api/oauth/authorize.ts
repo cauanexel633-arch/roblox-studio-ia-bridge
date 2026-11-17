@@ -82,6 +82,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const params = await readParams(req);
 
+  // Registros para diagnóstico. Nunca registram a chave, o código nem o token.
+  const redirectHost = (() => {
+    try {
+      return params.redirect_uri ? new URL(params.redirect_uri).host : "(vazio)";
+    } catch {
+      return "(inválido)";
+    }
+  })();
+  const shape = {
+    method: req.method,
+    response_type: params.response_type ?? "(vazio)",
+    client_id: params.client_id ? "presente" : "ausente",
+    redirect_host: redirectHost,
+    code_challenge: params.code_challenge ? "presente" : "ausente",
+    code_challenge_method: params.code_challenge_method ?? "(vazio)",
+    state: params.state ? "presente" : "ausente",
+    key: params.key ? "presente" : "ausente",
+  };
+
   if (
     params.response_type !== "code" ||
     !params.client_id ||
@@ -90,15 +109,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     !params.code_challenge ||
     params.code_challenge_method !== "S256"
   ) {
+    console.warn("[oauth] authorize: requisição inválida", shape);
     return sendHtml(res, 400, "<!doctype html><meta charset=utf-8><p>Requisição OAuth inválida.</p>");
   }
 
   if (req.method === "GET") {
+    console.log("[oauth] authorize: tela de login exibida", shape);
     return sendHtml(res, 200, loginPage(params));
   }
 
   const secret = process.env.API_SECRET;
   if (!secret || !safeEqual(params.key ?? "", secret)) {
+    console.warn("[oauth] authorize: chave incorreta ou API_SECRET ausente", shape);
     return sendHtml(res, 401, loginPage(params, "Chave incorreta."));
   }
 
@@ -111,6 +133,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const target = new URL(params.redirect_uri);
   target.searchParams.set("code", code);
   if (params.state) target.searchParams.set("state", params.state);
+
+  console.log("[oauth] authorize: chave aceita, redirecionando com código", shape);
 
   res.statusCode = 302;
   res.setHeader("Location", target.toString());
