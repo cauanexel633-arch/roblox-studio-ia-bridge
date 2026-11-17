@@ -84,13 +84,36 @@ cmd.subscribe((msg) => {
   }
 
   const out = ably.channels.get(`res:${requestId}`);
-  const reply = (payload: object) =>
-    out.publish("result", encodeReply(payload)).catch((e) => console.error("Falha ao publicar resposta:", e));
+  const commandName = msg.name === "call" ? (tool ?? "call") : msg.name;
+  const receivedAt = Date.now();
+
+  const reply = async (payload: object) => {
+    try {
+      await out.publish("result", encodeReply(payload));
+      console.log(`[BRIDGE] Resposta publicada: ${commandName} (requestId=${requestId})`);
+    } catch (error) {
+      console.error(`[BRIDGE] Falha ao publicar resposta: ${commandName} (requestId=${requestId})`, error);
+      throw error;
+    }
+  };
+
+  console.log(`[FILA] Recebido: ${commandName} (requestId=${requestId})`);
 
   enqueue(async () => {
+    const startedAt = Date.now();
+    console.log(
+      `[FILA] Iniciando: ${commandName}; espera na fila=${startedAt - receivedAt}ms (requestId=${requestId})`
+    );
+
     if (msg.name === "list") {
-      const { tools } = await mcp.listTools();
-      await reply({ ok: true, tools: tools.filter((t) => ALLOWED.has(t.name)) });
+      try {
+        const { tools } = await mcp.listTools();
+        console.log(`[MCP] listTools concluído em ${Date.now() - startedAt}ms (requestId=${requestId})`);
+        await reply({ ok: true, tools: tools.filter((t) => ALLOWED.has(t.name)) });
+      } catch (error) {
+        console.error(`[MCP] listTools falhou após ${Date.now() - startedAt}ms (requestId=${requestId})`, error);
+        throw error;
+      }
       return;
     }
 
@@ -100,14 +123,36 @@ cmd.subscribe((msg) => {
         await reply({ ok: false, error: `ferramenta não permitida: ${tool}` });
         return;
       }
-      console.log(`Executando: ${tool}`);
-      const result = await mcp.callTool({ name: tool, arguments: args ?? {} });
-      await reply({ ok: true, result });
+
+      const toolStartedAt = Date.now();
+      console.log(`[MCP] Iniciando ferramenta: ${tool} (requestId=${requestId})`);
+      try {
+        const result = await mcp.callTool({ name: tool, arguments: args ?? {} });
+        console.log(`[MCP] Ferramenta concluída: ${tool} em ${Date.now() - toolStartedAt}ms (requestId=${requestId})`);
+        await reply({ ok: true, result });
+      } catch (error) {
+        console.error(
+          `[MCP] Ferramenta falhou: ${tool} após ${Date.now() - toolStartedAt}ms (requestId=${requestId})`,
+          error
+        );
+        throw error;
+      }
       return;
     }
 
+    console.warn(`[BRIDGE] Comando desconhecido: ${msg.name} (requestId=${requestId})`);
     await reply({ ok: false, error: `comando desconhecido: ${msg.name}` });
-  }).catch((err) => reply({ ok: false, error: String(err?.message ?? err) }));
+  }).catch(async (err) => {
+    console.error(
+      `[BRIDGE] Execução falhou: ${commandName} após ${Date.now() - receivedAt}ms (requestId=${requestId})`,
+      err
+    );
+    try {
+      await reply({ ok: false, error: String(err?.message ?? err) });
+    } catch {
+      // A falha de publicação já foi registrada por reply().
+    }
+  });
 });
 
 const shutdown = async () => {
