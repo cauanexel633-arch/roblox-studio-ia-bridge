@@ -53,11 +53,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!botToken || !machineId || !ablyKey) return res.status(500).json({ error: "Telegram/Ably não configurado" });
 
   const http = createHttpClient({ key: ablyKey });
-  if (decision === "approved") {
-    await http.channels.get(`control:${machineId}`).publish("start", {
-      requestId, source: "telegram",
-    });
-  }
+  await http.channels.get(`control:${machineId}`).publish("decision", { requestId, decision });
   await http.channels.get(`approval-res:${requestId}`).publish("decision", { decision });
 
   const api = `https://api.telegram.org/bot${botToken}`;
