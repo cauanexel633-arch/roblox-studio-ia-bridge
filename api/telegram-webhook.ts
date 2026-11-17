@@ -13,7 +13,7 @@ function validSignature(requestId: string, decision: string, expiresAt: string, 
   const expected = createHmac("sha256", secret)
     .update(`telegram-approval:v1:${requestId}:${decision}:${expiresAt}`)
     .digest("hex")
-    .slice(0, 16);
+    .slice(0, 12);
   return safeEqual(expected, signature);
 }
 
