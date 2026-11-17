@@ -7,11 +7,11 @@ function safeEqual(a: string, b: string): boolean {
   const y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
 }
-function validSignature(requestId: string, decision: string, signature: string): boolean {
+function validSignature(requestId: string, decision: string, expiresAt: string, signature: string): boolean {
   const secret = process.env.API_SECRET;
   if (!secret) return false;
   const expected = createHmac("sha256", secret)
-    .update(`telegram-approval:v1:${requestId}:${decision}`)
+    .update(`telegram-approval:v1:${requestId}:${decision}:${expiresAt}`)
     .digest("hex")
     .slice(0, 16);
   return safeEqual(expected, signature);
@@ -35,10 +35,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const callback = update.callback_query;
   if (!callback?.id || !callback.data) return res.status(200).json({ ok: true });
 
-  const [prefix, requestId, decision, signature] = callback.data.split("|");
-  const validId = /^[0-9a-f-]{36}$/i.test(requestId ?? "");
+  const [prefix, requestId, decision, expiresAt, signature] = callback.data.split("|");
+  const validId = /^[0-9a-f]{24}$/i.test(requestId ?? "");
+  const validExpiry = /^\\d{10}$/.test(expiresAt ?? "") && Number(expiresAt) >= Math.floor(Date.now() / 1000);
   const validDecision = decision === "approved" || decision === "denied";
-  if (prefix !== "rbx" || !validId || !validDecision || !signature || !validSignature(requestId, decision, signature)) {
+  if (prefix !== "rbx" || !validId || !validExpiry || !validDecision || !signature || !validSignature(requestId, decision, expiresAt, signature)) {
     return res.status(200).json({ ok: true });
   }
 
