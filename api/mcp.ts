@@ -6,7 +6,7 @@ import { safeEqual } from "../lib/auth";
 import { isValidAccessToken, publicBaseUrl } from "../lib/oauth";
 import { sendToBridge } from "../lib/bridge";
 
-export const config = { maxDuration: 30 };
+export const config = { maxDuration: 60 };
 
 type McpTool = { name: string; description?: string; inputSchema: Record<string, unknown> };
 
