@@ -1,4 +1,5 @@
 import { createClient } from "@ably/pubsub-device";
+import { gzipSync } from "node:zlib";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -21,6 +22,24 @@ const ALLOWED = new Set(
   (process.env.ALLOWED_TOOLS ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 );
 const UUID = /^[0-9a-f-]{36}$/i;
+const COMPRESS_THRESHOLD_BYTES = 48 * 1024;
+const MAX_ABLY_MESSAGE_BYTES = 60 * 1024;
+
+/** Comprime respostas grandes para respeitar o limite de publicação do Ably. */
+function encodeReply(payload: object): object {
+  const json = JSON.stringify(payload);
+  const raw = Buffer.from(json, "utf8");
+  if (raw.byteLength <= COMPRESS_THRESHOLD_BYTES) return payload;
+
+  const compressed = gzipSync(raw).toString("base64");
+  const envelope = { __bridgeEncoding: "gzip+base64", payload: compressed };
+  const envelopeBytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+  if (envelopeBytes > MAX_ABLY_MESSAGE_BYTES) {
+    throw new Error(`Resposta ainda excede o limite do Ably após Gzip (${envelopeBytes} bytes)`);
+  }
+  console.log(`Resposta comprimida: ${raw.byteLength} → ${envelopeBytes} bytes`);
+  return envelope;
+}
 
 // 1. MCP oficial do Studio, como processo filho via stdio
 const mcp = new Client({ name: "roblox-studio-ia-bridge", version: "0.1.0" });
@@ -66,7 +85,7 @@ cmd.subscribe((msg) => {
 
   const out = ably.channels.get(`res:${requestId}`);
   const reply = (payload: object) =>
-    out.publish("result", payload).catch((e) => console.error("Falha ao publicar resposta:", e));
+    out.publish("result", encodeReply(payload)).catch((e) => console.error("Falha ao publicar resposta:", e));
 
   enqueue(async () => {
     if (msg.name === "list") {
