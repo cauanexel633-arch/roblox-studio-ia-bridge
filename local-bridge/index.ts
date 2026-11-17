@@ -12,7 +12,11 @@ const MACHINE_ID = env("MACHINE_ID");
 const TOKEN_URL = env("TOKEN_URL");
 const MACHINE_TOKEN = env("MACHINE_TOKEN");
 const MCP_CMD = env("ROBLOX_MCP_CMD");
-const MCP_ARGS = (process.env.ROBLOX_MCP_ARGS ?? "--stdio").split(/\s+/).filter(Boolean);
+// ROBLOX_MCP_ARGS é um array JSON, ex.: ["/c","cd /d %LOCALAPPDATA%\\Roblox && .\\mcp.bat"]
+const MCP_ARGS: string[] = JSON.parse(process.env.ROBLOX_MCP_ARGS ?? "[]");
+if (!Array.isArray(MCP_ARGS) || !MCP_ARGS.every((a) => typeof a === "string")) {
+  throw new Error("ROBLOX_MCP_ARGS deve ser um array JSON de strings");
+}
 const ALLOWED = new Set(
   (process.env.ALLOWED_TOOLS ?? "").split(",").map((s) => s.trim()).filter(Boolean)
 );

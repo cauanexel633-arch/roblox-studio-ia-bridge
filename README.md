@@ -45,7 +45,7 @@ Todas as conexões partem do seu computador. O Vercel não guarda estado: ele s�
 ### 3. Studio
 1. Abra o place no Roblox Studio.
 2. Clique em **Assistant → ⋯ → Manage MCP Servers** e ligue **Enable Studio as MCP server**.
-3. Anote o caminho do executável `rbx-studio-mcp.exe` (a documentação oficial mostra o caminho para Windows).
+3. Confirme que o MCP funciona pelo `mcp.bat` do Roblox, em `%LOCALAPPDATA%\Roblox`. O bridge usa essa mesma configuração, com `cmd.exe /c` e o `mcp.bat`.
 
 ### 4. Servidor local (Windows)
 ```powershell
