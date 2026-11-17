@@ -39,7 +39,7 @@ Todas as conexões partem do seu computador. O Vercel não guarda estado: ele s�
 1. Importe este repositório no Vercel.
 2. Em *Settings → Environment Variables*, preencha as variáveis de `.env.example`:
    - `ABLY_API_KEY`, `API_SECRET`, `MACHINE_TOKEN`, `MACHINE_ID`
-   - `ANTHROPIC_API_KEY` e, se quiser, `ANTHROPIC_MODEL`
+   - `OPENROUTER_API_KEY` e, se quiser, `OPENROUTER_MODEL` (padrão `anthropic/claude-sonnet-5`; qualquer modelo com suporte a tools na OpenRouter serve)
 3. Gere segredos longos e aleatórios para `API_SECRET` e `MACHINE_TOKEN`. Use valores diferentes.
 
 ### 3. Studio

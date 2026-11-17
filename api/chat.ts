@@ -1,11 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import Anthropic from "@anthropic-ai/sdk";
 import { checkBearer } from "../lib/auth";
 import { sendToBridge } from "../lib/bridge";
 
 export const config = { maxDuration: 60 };
 
-const MODEL = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = process.env.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-5";
 const MAX_STEPS = 8;
 
 const SYSTEM = `Você controla o Roblox Studio do usuário através de ferramentas.
@@ -15,9 +15,21 @@ const SYSTEM = `Você controla o Roblox Studio do usuário através de ferrament
 
 type McpTool = { name: string; description?: string; inputSchema: Record<string, unknown> };
 
+type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+
+type ChatMessage =
+  | { role: "system" | "user"; content: string }
+  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+type OpenRouterResponse = {
+  choices?: { message: { role: "assistant"; content: string | null; tool_calls?: ToolCall[] } }[];
+  error?: { message?: string; code?: number };
+};
+
 /**
- * Endpoint para a IA: recebe uma mensagem em linguagem natural,
- * roda o loop de tool use com Claude e executa as ferramentas no Studio.
+ * Endpoint para a IA: recebe uma mensagem em linguagem natural, roda o loop
+ * de tool use pela OpenRouter e executa as ferramentas no Studio via Ably.
  * POST /api/chat  { "message": "..." }
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -27,53 +39,79 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { message } = (req.body ?? {}) as { message?: string };
   if (!message) return res.status(400).json({ ok: false, error: "campo 'message' obrigatório" });
 
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return res.status(500).json({ ok: false, error: "OPENROUTER_API_KEY não configurada" });
+
   // Ferramentas disponíveis = as que o servidor local liberou na allowlist
   const list = await sendToBridge("list");
   if (!list.ok) return res.status(502).json(list);
 
   const tools = ((list.tools ?? []) as McpTool[]).map((t) => ({
-    name: t.name,
-    description: t.description ?? "",
-    input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description ?? "",
+      parameters: t.inputSchema,
+    },
   }));
 
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: message }];
+  const messages: ChatMessage[] = [
+    { role: "system", content: SYSTEM },
+    { role: "user", content: message },
+  ];
 
   for (let step = 1; step <= MAX_STEPS; step++) {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      system: SYSTEM,
-      tools,
-      messages,
+    const response = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "Roblox Studio IA Bridge",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages,
+        tools: tools.length ? tools : undefined,
+        max_tokens: 2048,
+      }),
     });
 
-    messages.push({ role: "assistant", content: response.content });
+    const data = (await response.json().catch(() => ({}))) as OpenRouterResponse;
 
-    if (response.stop_reason !== "tool_use") {
-      const answer = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
-        .map((b) => b.text)
-        .join("\n");
-      return res.status(200).json({ ok: true, answer, steps: step });
+    if (!response.ok) {
+      return res.status(502).json({
+        ok: false,
+        error: `OpenRouter respondeu ${response.status}: ${data.error?.message ?? "erro desconhecido"}`,
+      });
     }
 
-    const results: Anthropic.ToolResultBlockParam[] = [];
-    for (const block of response.content) {
-      if (block.type !== "tool_use") continue;
-      const reply = await sendToBridge("call", {
-        tool: block.name,
-        args: (block.input ?? {}) as Record<string, unknown>,
-      });
-      results.push({
-        type: "tool_result",
-        tool_use_id: block.id,
+    const msg = data.choices?.[0]?.message;
+    if (!msg) return res.status(502).json({ ok: false, error: "resposta vazia da OpenRouter" });
+
+    messages.push({
+      role: "assistant",
+      content: msg.content ?? null,
+      tool_calls: msg.tool_calls?.length ? msg.tool_calls : undefined,
+    });
+
+    if (!msg.tool_calls?.length) {
+      return res.status(200).json({ ok: true, answer: msg.content ?? "", steps: step, model: MODEL });
+    }
+
+    for (const call of msg.tool_calls) {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(call.function.arguments || "{}");
+      } catch {
+        args = {};
+      }
+      const reply = await sendToBridge("call", { tool: call.function.name, args });
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id,
         content: JSON.stringify(reply),
-        is_error: !reply.ok,
       });
     }
-    messages.push({ role: "user", content: results });
   }
 
   return res.status(200).json({ ok: false, error: `limite de ${MAX_STEPS} passos atingido` });
