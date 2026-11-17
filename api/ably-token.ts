@@ -3,9 +3,8 @@ import { createHttpClient } from "@ably/pubsub-server";
 import { checkBearer } from "../lib/auth";
 
 /**
- * Token do agente local. O mesmo token é usado pelo manager e pelo worker:
- * - manager: recebe controle/health e publica health-res/approval-res;
- * - worker: recebe cmd e publica res.
+ * Token do agente local. O manager recebe health e publica health-res;
+ * o worker recebe cmd e publica res.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!checkBearer(req.headers, process.env.MACHINE_TOKEN)) {
@@ -22,11 +21,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     clientId: machineId,
     capability: JSON.stringify({
       [`cmd:${machineId}`]: ["subscribe"],
-      [`control:${machineId}`]: ["subscribe"],
       [`health:${machineId}`]: ["subscribe"],
       "res:*": ["publish"],
       "health-res:*": ["publish"],
-      "approval-res:*": ["publish"],
     }),
     ttl: 60 * 60 * 1000,
   });
