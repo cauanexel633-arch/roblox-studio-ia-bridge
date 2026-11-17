@@ -2,7 +2,8 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { checkSecret } from "../lib/auth";
+import { safeEqual } from "../lib/auth";
+import { isValidAccessToken, publicBaseUrl } from "../lib/oauth";
 import { sendToBridge } from "../lib/bridge";
 
 export const config = { maxDuration: 30 };
@@ -11,14 +12,25 @@ type McpTool = { name: string; description?: string; inputSchema: Record<string,
 
 /**
  * Servidor MCP remoto (Streamable HTTP, sem estado).
- * Qualquer IA que aceite conector/plugin MCP aponta para:
- *   https://SEU-DOMINIO.vercel.app/api/mcp?key=API_SECRET
- * (ou envia "Authorization: Bearer API_SECRET").
+ * Conectores de IA entram por OAuth: a tela de login em /api/oauth/authorize
+ * pede a chave, e o token emitido é enviado como "Authorization: Bearer".
+ * O API_SECRET também é aceito direto no cabeçalho, para testes com curl.
  *
  * As ferramentas expostas são as que o servidor local liberou em ALLOWED_TOOLS.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!checkSecret(req.headers, req.query ?? {}, process.env.API_SECRET)) {
+  const auth = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+  const secret = process.env.API_SECRET;
+
+  const authorized =
+    token !== "" && (isValidAccessToken(token) || (!!secret && safeEqual(token, secret)));
+
+  if (!authorized) {
+    res.setHeader(
+      "WWW-Authenticate",
+      `Bearer resource_metadata="${publicBaseUrl(req)}/.well-known/oauth-protected-resource"`
+    );
     return res.status(401).end();
   }
 

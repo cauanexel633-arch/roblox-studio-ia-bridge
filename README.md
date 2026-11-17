@@ -4,7 +4,7 @@ Permite que qualquer IA que aceite conector ou plugin MCP controle o Roblox Stud
 
 ```
 IA de fora (conector/plugin MCP)
-        │  Streamable HTTP  (/api/mcp?key=...)
+        │  Streamable HTTP + OAuth  (/api/mcp)
         ▼
 Vercel ──── publica comando ────▶ Ably ────▶ servidor local (Windows) ────▶ MCP do Studio (stdio)
    ▲                                              │
@@ -30,7 +30,8 @@ O projeto não chama nenhum modelo de IA. Quem decide o que fazer é a IA que vo
 - **Allowlist:** só as ferramentas em `ALLOWED_TOOLS` aparecem para a IA e são aceitas pelo servidor local. Vazio significa nenhuma.
 - **Token restrito:** o servidor local recebe um token Ably que só permite assinar `cmd:<MACHINE_ID>` e publicar em `res:*`. A chave principal fica só no Vercel.
 - **Segredos separados:** `API_SECRET` (quem fala com o servidor) e `MACHINE_TOKEN` (quem é o seu PC) são independentes.
-- **Segredo na URL:** conectores de IA nem sempre aceitam cabeçalhos, então o `API_SECRET` pode ir na query `?key=`. Essa URL funciona como senha: não a publique nem a cole em lugares públicos. Se a URL vazar, troque o `API_SECRET` na Vercel e reconecte.
+- **Login com chave (OAuth 2.1 + PKCE):** a IA não guarda sua chave. Ao adicionar o conector, ela abre uma tela de login do seu servidor, você digita o `API_SECRET` uma vez, e a IA recebe um token de acesso válido por 30 dias.
+- **Tokens são assinados, não guardados:** não há banco de dados. Trocar o `API_SECRET` na Vercel invalida todos os tokens emitidos, o que serve como botão de "desconectar tudo".
 - **Studio executa Luau com acesso total ao projeto.** Não libere ferramentas de execução de código sem revisão.
 
 ## Configuração
@@ -49,16 +50,26 @@ O projeto não chama nenhum modelo de IA. Quem decide o que fazer é a IA que vo
 A URL do servidor MCP é:
 
 ```
-https://SEU-DOMINIO.vercel.app/api/mcp?key=SEU_API_SECRET
+https://SEU-DOMINIO.vercel.app/api/mcp
 ```
 
-Exemplo de adição como conector personalizado, no formato usado pelos clientes MCP. Os nomes dos menus mudam com o tempo, então siga a documentação do cliente:
+Adicione como conector personalizado. Os nomes dos menus mudam com o tempo, então siga a documentação do cliente:
 
 - **Claude (claude.ai):** Settings → Connectors → *Add custom connector* → cole a URL.
 - **ChatGPT:** Settings → Connectors (modo desenvolvedor) → adicione um servidor MCP com a URL.
 - **Outros clientes MCP:** use a URL como endpoint do tipo *Streamable HTTP*.
 
-Se o cliente exigir OAuth, a URL com `?key=` não vai funcionar. Nesse caso, avise, porque será preciso adicionar OAuth ao servidor.
+Ao adicionar, o cliente abre uma página **Conectar ao Roblox Studio**. Digite o `API_SECRET` e clique em **Autorizar**. Depois disso, a conexão fica ativa por 30 dias. Quando expirar, o cliente pede a chave de novo.
+
+Endpoints OAuth, para referência:
+
+| Endpoint | Função |
+|---|---|
+| `/.well-known/oauth-protected-resource` | Diz onde fica o servidor de login |
+| `/.well-known/oauth-authorization-server` | Metadados do servidor de login |
+| `/api/oauth/authorize` | Tela de login com a chave |
+| `/api/oauth/token` | Troca o código por token (PKCE) |
+| `/api/oauth/register` | Registro de cliente (público, sem segredo) |
 
 ### 4. Studio
 1. Abra o place no Roblox Studio.
@@ -88,8 +99,9 @@ curl -X POST https://SEU-DOMINIO.vercel.app/api/tool \
   -H "Authorization: Bearer $API_SECRET" -H "Content-Type: application/json" \
   -d '{"tool":"NOME_DA_FERRAMENTA","args":{}}'
 
-# Lista de ferramentas via MCP (mesmo que a IA veria)
-curl -X POST "https://SEU-DOMINIO.vercel.app/api/mcp?key=$API_SECRET" \
+# Lista de ferramentas via MCP (mesmo que a IA veria), com o segredo no cabeçalho
+curl -X POST "https://SEU-DOMINIO.vercel.app/api/mcp" \
+  -H "Authorization: Bearer $API_SECRET" \
   -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
@@ -103,7 +115,10 @@ Comece sempre com uma ferramenta de **leitura**. Só depois libere escrita.
 - O MCP do Studio atende uma chamada por vez; o servidor local enfileira as chamadas.
 - A lista de ferramentas é pedida ao PC a cada `tools/list`, então o PC precisa estar ligado para a IA ver qualquer ferramenta.
 - O servidor local não reconecta sozinho se o processo do MCP cair. Reinicie o `npm start`.
-- Ainda não testado com um cliente real de IA. O teste feito foi do protocolo MCP localmente.
+- Ainda não testado com um cliente real de IA. O fluxo OAuth foi testado localmente, cenário a cenário (chave errada, PKCE errado, token forjado, redirect diferente).
+- Códigos de autorização valem 5 minutos. Como não há banco, um código ainda dentro desse prazo pode ser reutilizado. O PKCE limita o estrago, mas não elimina isso.
+- Não há refresh token: quando o token de 30 dias expira, o cliente pede a chave de novo.
+- Se o Vercel mudar de domínio, configure `PUBLIC_URL` com a URL pública, para os metadados OAuth ficarem corretos.
 
 ## Desenvolvimento
 
