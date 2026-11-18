@@ -6,7 +6,9 @@ import { safeEqual } from "../lib/auth";
 import { isValidAccessToken, publicBaseUrl } from "../lib/oauth";
 import { sendToBridge } from "../lib/bridge";
 
-export const config = { maxDuration: 30 };
+// Comandos no PC esperam a aprovação humana (até 45 s), então o limite é maior
+export const config = { maxDuration: 60 };
+const CALL_TIMEOUT_MS = 55_000;
 
 type McpTool = { name: string; description?: string; inputSchema: Record<string, unknown> };
 
@@ -64,10 +66,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const reply = await sendToBridge("call", {
-      tool: request.params.name,
-      args: request.params.arguments ?? {},
-    });
+    const reply = await sendToBridge(
+      "call",
+      { tool: request.params.name, args: request.params.arguments ?? {} },
+      CALL_TIMEOUT_MS
+    );
 
     if (!reply.ok) {
       return { isError: true, content: [{ type: "text" as const, text: reply.error }] };

@@ -42,7 +42,8 @@ function decodeBridgeReply(data: unknown): BridgeReply {
  */
 export async function sendToBridge(
   name: "list" | "call",
-  data: Record<string, unknown> = {}
+  data: Record<string, unknown> = {},
+  timeoutMs = REPLY_TIMEOUT_MS
 ): Promise<BridgeReply> {
   const machineId = process.env.MACHINE_ID;
   const key = process.env.ABLY_API_KEY;
@@ -59,7 +60,7 @@ export async function sendToBridge(
     const reply = new Promise<BridgeReply>((resolve, reject) => {
       timer = setTimeout(
         () => reject(new Error("timeout: o servidor local não respondeu (está ligado e conectado?)")),
-        REPLY_TIMEOUT_MS
+        timeoutMs
       );
       // Falha de conexão com o Ably deve virar erro imediato, não esperar o timeout
       realtime.connection.on("failed", (change) => {

@@ -2,6 +2,7 @@ import { createClient } from "@ably/pubsub-device";
 import { gzipSync } from "node:zlib";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { RUN_COMMAND_TOOL, runWithApproval } from "./commands.js";
 
 function env(name: string, fallback?: string): string {
   const value = process.env[name] ?? fallback;
@@ -49,6 +50,11 @@ const { tools: available } = await mcp.listTools();
 console.log("Ferramentas expostas pelo MCP do Studio:");
 for (const t of available) {
   console.log(` - ${t.name}${ALLOWED.has(t.name) ? "  [liberada]" : "  [bloqueada]"}`);
+}
+if (ALLOWED.has(RUN_COMMAND_TOOL.name)) {
+  console.warn(
+    "run_command liberado: a IA poderá pedir comandos, mas cada um exige sua aprovação 's' neste terminal."
+  );
 }
 if (ALLOWED.size === 0) {
   console.warn("ALLOWED_TOOLS está vazio: nenhuma ferramenta será exposta à IA.");
@@ -109,7 +115,9 @@ cmd.subscribe((msg) => {
       try {
         const { tools } = await mcp.listTools();
         console.log(`[MCP] listTools concluído em ${Date.now() - startedAt}ms (requestId=${requestId})`);
-        await reply({ ok: true, tools: tools.filter((t) => ALLOWED.has(t.name)) });
+        const exposed: unknown[] = tools.filter((t) => ALLOWED.has(t.name));
+        if (ALLOWED.has(RUN_COMMAND_TOOL.name)) exposed.push(RUN_COMMAND_TOOL);
+        await reply({ ok: true, tools: exposed });
       } catch (error) {
         console.error(`[MCP] listTools falhou após ${Date.now() - startedAt}ms (requestId=${requestId})`, error);
         throw error;
@@ -121,6 +129,13 @@ cmd.subscribe((msg) => {
       if (!tool || !ALLOWED.has(tool)) {
         console.warn(`Bloqueado: ${tool}`);
         await reply({ ok: false, error: `ferramenta não permitida: ${tool}` });
+        return;
+      }
+
+      // Comandos no PC: só executam após aprovação no terminal
+      if (tool === RUN_COMMAND_TOOL.name) {
+        console.log(`[BRIDGE] Pedido de comando recebido (requestId=${requestId})`);
+        await reply(await runWithApproval(args ?? {}));
         return;
       }
 
